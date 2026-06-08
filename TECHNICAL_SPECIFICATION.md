@@ -98,27 +98,166 @@ The protocol must support recombining PT and YT prior to maturity if both instru
 
 ## 6. Contract Architecture
 
-### 6.1 Smart Contracts
+### 6.1 Implemented contracts
 
-- `PrincipalManager`: central protocol coordinator.
-- `SYWrapper`: standardized yield wrapper.
-- `PTToken`: mintable/burnable contract representing PT.
-- `YTToken`: mintable/burnable contract representing YT.
-- `MarketPool`: PT/SY liquidity pool.
-- `Router`: multi-step flow coordinator.
-- `OracleAdapter`: reference-value oracle integration.
-- `Permissioning`: eligibility and compliance enforcement.
-- `RiskControl`: pause, circuit breakers, and oracle health.
+Five Soroban contracts are implemented in this repository. Two additional contracts (`MarketPool`, `Router`) are planned for the next milestone.
 
-### 6.2 Data and Storage
+#### OracleAdapter (`contracts/oracle_adapter`)
 
-Important onchain state:
+```rust
+fn initialize(env: Env, admin: Address)
+fn set_reference_value(env: Env, caller: Address, value: i128, timestamp: u64)
+fn get_reference_value(env: Env) -> i128
+fn get_reference_timestamp(env: Env) -> u64
+fn is_fresh(env: Env, max_stale_seconds: u64) -> bool
+fn transfer_admin(env: Env, current_admin: Address, new_admin: Address)
+fn get_admin(env: Env) -> Address
+```
 
-- Supported underlying assets and wrapper configurations.
-- Active maturities and token issuance schedules.
-- Reference price history and oracle freshness metadata.
-- Permissioned participant allowlist or eligibility flags.
-- Fee configuration and treasury accrual.
+#### Permissioning (`contracts/permissioning`)
+
+```rust
+fn initialize(env: Env, admin: Address)
+fn grant_account(env: Env, caller: Address, account: Address)
+fn revoke_account(env: Env, caller: Address, account: Address)
+fn grant_accounts(env: Env, caller: Address, accounts: Vec<Address>)
+fn grant_asset(env: Env, caller: Address, account: Address, asset: Address)
+fn revoke_asset(env: Env, caller: Address, account: Address, asset: Address)
+fn is_allowed(env: Env, account: Address) -> bool
+fn is_allowed_for_asset(env: Env, account: Address, asset: Address) -> bool
+fn transfer_admin(env: Env, current_admin: Address, new_admin: Address)
+fn get_admin(env: Env) -> Address
+```
+
+#### SYWrapper (`contracts/sy_wrapper`)
+
+```rust
+fn initialize(env: Env, admin: Address, underlying: Address)
+fn deposit(env: Env, from: Address, amount: i128) -> i128          // returns shares minted
+fn withdraw(env: Env, from: Address, shares: i128, to: Address) -> i128  // returns underlying out
+fn exchange_rate(env: Env) -> i128       // underlying per share, scaled ×10⁷
+fn total_underlying(env: Env) -> i128
+fn total_shares(env: Env) -> i128
+fn balance_of(env: Env, account: Address) -> i128
+fn underlying_address(env: Env) -> Address
+fn set_paused(env: Env, caller: Address, paused: bool)
+fn transfer_admin(env: Env, current_admin: Address, new_admin: Address)
+fn get_admin(env: Env) -> Address
+```
+
+#### PrincipalManager (`contracts/principal_manager`)
+
+```rust
+fn initialize(env: Env, admin: Address, sy_wrapper: Address,
+              oracle: Address, permissioning: Address, maturity: u64)
+fn mint(env: Env, from: Address, sy_shares: i128) -> MintResult
+fn redeem(env: Env, from: Address, pt_amount: i128, yt_amount: i128) -> RedeemResult
+fn pt_balance(env: Env, account: Address) -> i128
+fn yt_balance(env: Env, account: Address) -> i128
+fn total_pt(env: Env) -> i128
+fn total_yt(env: Env) -> i128
+fn maturity(env: Env) -> u64
+fn is_mature(env: Env) -> bool
+fn set_paused(env: Env, caller: Address, paused: bool)
+fn transfer_admin(env: Env, current_admin: Address, new_admin: Address)
+fn get_admin(env: Env) -> Address
+
+// Return types
+struct MintResult  { pt_minted: i128, yt_minted: i128 }
+struct RedeemResult { underlying_from_pt: i128, underlying_from_yt: i128 }
+```
+
+#### RiskControl (`contracts/risk_control`)
+
+```rust
+fn initialize(env: Env, admin: Address, cb_limit: i128)
+fn pause(env: Env, caller: Address)
+fn unpause(env: Env, caller: Address)
+fn is_paused(env: Env) -> bool
+fn add_pauser(env: Env, caller: Address, pauser: Address)
+fn remove_pauser(env: Env, caller: Address, pauser: Address)
+fn check_deposit(env: Env, amount: i128)     // reverts if paused or circuit breaker tripped
+fn set_cb_limit(env: Env, caller: Address, new_limit: i128)
+fn get_cb_limit(env: Env) -> i128
+fn get_cb_volume(env: Env) -> i128
+fn transfer_admin(env: Env, current_admin: Address, new_admin: Address)
+fn get_admin(env: Env) -> Address
+```
+
+### 6.2 Error codes
+
+Each contract defines a `#[contracterror]` enum. Codes are stable across versions.
+
+#### OracleAdapter errors
+
+| Code | Name | Trigger |
+|---|---|---|
+| 1 | `AlreadyInitialized` | `initialize` called twice |
+| 2 | `Unauthorized` | caller ≠ stored admin |
+| 3 | `InvalidValue` | price ≤ 0 |
+| 4 | `TimestampTooOld` | new timestamp ≤ stored timestamp |
+| 5 | `NotInitialized` | read before `initialize` |
+
+#### Permissioning errors
+
+| Code | Name | Trigger |
+|---|---|---|
+| 1 | `AlreadyInitialized` | `initialize` called twice |
+| 2 | `Unauthorized` | caller ≠ admin |
+| 3 | `NotInitialized` | read before `initialize` |
+
+#### SYWrapper errors
+
+| Code | Name | Trigger |
+|---|---|---|
+| 1 | `AlreadyInitialized` | `initialize` called twice |
+| 2 | `Unauthorized` | caller ≠ admin |
+| 3 | `NotInitialized` | read before `initialize` |
+| 4 | `ZeroAmount` | amount or shares ≤ 0 |
+| 5 | `InsufficientShares` | withdraw > balance |
+| 6 | `Paused` | operation while paused |
+| 7 | `ArithmeticOverflow` | reserved |
+
+#### PrincipalManager errors
+
+| Code | Name | Trigger |
+|---|---|---|
+| 1 | `AlreadyInitialized` | `initialize` called twice |
+| 2 | `Unauthorized` | caller ≠ admin |
+| 3 | `NotInitialized` | read before `initialize` |
+| 4 | `ZeroAmount` | amount ≤ 0 |
+| 5 | `NotMature` | `redeem` before maturity |
+| 6 | `AlreadyMature` | `mint` after maturity |
+| 7 | `OracleStale` | oracle timestamp too old at redemption |
+| 8 | `InsufficientBalance` | redeem > PT or YT balance |
+| 9 | `Paused` | operation while paused |
+| 10 | `PermissionDenied` | caller not in permissioning allow-list |
+
+#### RiskControl errors
+
+| Code | Name | Trigger |
+|---|---|---|
+| 1 | `AlreadyInitialized` | `initialize` called twice |
+| 2 | `Unauthorized` | caller ≠ admin |
+| 3 | `NotInitialized` | read before `initialize` |
+| 4 | `Paused` | `check_deposit` while paused |
+| 5 | `CircuitBreakerTripped` | deposit would exceed `cb_limit` in window |
+| 6 | `NotPauser` | `pause` called by non-pauser |
+| 7 | `AlreadyPauser` | `add_pauser` for existing pauser |
+
+### 6.3 Protocol constants
+
+| Constant | Value | Contract | Meaning |
+|---|---|---|---|
+| `RATE_SCALE` | `10_000_000` | SYWrapper | Fixed-point scale for exchange rate |
+| `SCALE` | `10_000_000` | PrincipalManager | Fixed-point scale for notional math |
+| `ELIGIBILITY_TTL_LEDGERS` | `518_400` | Permissioning | ≈ 30 days at 5 s/ledger |
+| `CB_WINDOW_SECS` | `86_400` | RiskControl | 24-hour circuit breaker window |
+| `MAX_ORACLE_STALENESS_SECS` | `3_600` | PrincipalManager | 1-hour oracle freshness threshold |
+
+### 6.4 Data and Storage
+
+See `ARCHITECTURE.md` section 6 for the complete per-contract storage key reference table.
 
 ## 7. Risk Controls and Security
 
@@ -200,13 +339,30 @@ Important onchain state:
 - PT and YT instruments are not intended for general-purpose unpermissioned trading in v1.
 - The protocol is built on Stellar’s native low-fee, fast-settlement strengths.
 
-## 12. Next Steps
+## 12. Implementation status and next steps
 
-1. Define exact contract interfaces and entrypoints for all modules.
-2. Formalize the maturity settlement formula, including rounding rules.
-3. Design the permissioned transfer and eligibility verification architecture.
-4. Implement oracle health checks, pause logic, and emergency governance controls.
-5. Validate PT/YT routing and market dynamics with realistic USDY price scenarios.
+### Completed
+
+- [x] OracleAdapter — reference value, freshness, admin transfer
+- [x] Permissioning — account and asset eligibility, batch grant, TTL
+- [x] SYWrapper — deposit, withdraw, rolling exchange rate, pause
+- [x] PrincipalManager — mint PT/YT, redeem at maturity, oracle/permissioning hooks
+- [x] RiskControl — pause, pauser roles, rolling circuit breaker
+- [x] Deterministic settlement formula and rounding rules
+- [x] Storage tier design (instance vs persistent)
+- [x] Full unit test suite for all five contracts
+
+### Next milestone
+
+1. Implement `MarketPool` — PT/SY AMM liquidity pool with swap fees.
+2. Implement `Router` — multi-step flow coordinator (deposit → mint → swap → redeem).
+3. Separate PT and YT into standalone SEP-41 token contracts for free tradability.
+4. Wire `RiskControl.check_deposit` into SYWrapper and PrincipalManager.
+5. Implement full cross-contract calls: PrincipalManager → OracleAdapter, PrincipalManager → Permissioning.
+6. Add `recombine(pt_amount, yt_amount) → sy_shares` to PrincipalManager.
+7. Define fee parameters (`fee_yield_bps`, `fee_swap_bps`) and treasury accrual.
+8. Expand tests: oracle failure scenarios, permissioning violations, rounding edge cases.
+9. Commission third-party security audit before mainnet.
 
 ## 13. Oracle Security and Trust Model
 
